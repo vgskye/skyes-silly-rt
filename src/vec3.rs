@@ -99,7 +99,7 @@ impl Vector3 {
     }
 
     pub fn is_small(self) -> bool {
-        self.0.abs() < 1e-8 || self.1.abs() < 1e-8 || self.2.abs() < 1e-8
+        self.0.abs() < 1e-8 && self.1.abs() < 1e-8 && self.2.abs() < 1e-8
     }
 
     pub fn attune(self, other: Vector3) -> Self {
@@ -122,5 +122,11 @@ impl From<Vector3> for Rgb<u8> {
             (f(value.1) * 255.0) as u8,
             (f(value.2) * 255.0) as u8,
         ])
+    }
+}
+
+impl From<stl_io::Vector<f32>> for Vector3 {
+    fn from(value: stl_io::Vector<f32>) -> Vector3 {
+        Vector3(value.0[0] as f64, value.0[1] as f64, value.0[2] as f64)
     }
 }

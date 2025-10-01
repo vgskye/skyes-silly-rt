@@ -1,20 +1,25 @@
+mod quat;
 mod rng_utils;
 mod vec3;
 
 use std::{
     f64::{self, consts::PI},
+    fs::File,
     ops::{Add, Mul, RangeBounds},
+    path::Path,
     sync::Arc,
 };
 
-use image::{Rgb, RgbImage};
-use indicatif::{ProgressBar, ProgressIterator};
+use image::RgbImage;
+use indicatif::ProgressBar;
 use rand::Rng;
-use rayon::prelude::*;
 use rng_utils::rng;
 pub use vec3::Vector3;
 
-use crate::rng_utils::{UniformDisc, UniformSphere};
+use crate::{
+    quat::Quaternion,
+    rng_utils::{UniformDisc, UniformSphere},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 struct RangeExclusive(pub f64, pub f64);
@@ -212,10 +217,6 @@ trait Hittable {
     fn aabb(&self) -> Aabb;
 }
 
-trait SimpleHittable {
-    fn hit_simple(&self, ray: Ray, t_range: RangeExclusive) -> bool;
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 struct Aabb(pub (f64, f64), pub (f64, f64), pub (f64, f64));
 
@@ -235,15 +236,12 @@ impl Aabb {
             (a.2.0.min(b.2.0), a.2.1.max(b.2.1)),
         )
     }
-}
-
-impl SimpleHittable for Aabb {
-    fn hit_simple(&self, ray: Ray, t_range: RangeExclusive) -> bool {
+    fn hit_cached(&self, ray: Ray, t_range: RangeExclusive, dir_inv: Vector3) -> bool {
         let min = t_range.0;
         let max = t_range.1;
 
-        let t0 = (self.0.0 - ray.origin.0) / ray.direction.0;
-        let t1 = (self.0.1 - ray.origin.0) / ray.direction.0;
+        let t0 = (self.0.0 - ray.origin.0) * dir_inv.0;
+        let t1 = (self.0.1 - ray.origin.0) * dir_inv.0;
 
         let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
         let min = if min <= t0 { t0 } else { min };
@@ -253,8 +251,8 @@ impl SimpleHittable for Aabb {
             return false;
         }
 
-        let t0 = (self.1.0 - ray.origin.1) / ray.direction.1;
-        let t1 = (self.1.1 - ray.origin.1) / ray.direction.1;
+        let t0 = (self.1.0 - ray.origin.1) * dir_inv.1;
+        let t1 = (self.1.1 - ray.origin.1) * dir_inv.1;
 
         let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
         let min = if min <= t0 { t0 } else { min };
@@ -264,8 +262,8 @@ impl SimpleHittable for Aabb {
             return false;
         }
 
-        let t0 = (self.2.0 - ray.origin.2) / ray.direction.2;
-        let t1 = (self.2.1 - ray.origin.2) / ray.direction.2;
+        let t0 = (self.2.0 - ray.origin.2) * dir_inv.2;
+        let t1 = (self.2.1 - ray.origin.2) * dir_inv.2;
 
         let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
         let min = if min <= t0 { t0 } else { min };
@@ -315,14 +313,109 @@ impl Hittable for Sphere {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+struct Triangle {
+    pub a: Vector3,
+    pub b: Vector3,
+    pub c: Vector3,
+    pub normal: Vector3,
+    pub material: Arc<MaterialEnum>,
+}
+
+impl Hittable for Triangle {
+    fn hit(&self, ray: Ray, t_range: RangeExclusive) -> Option<(Hit, Arc<MaterialEnum>)> {
+        let e1 = self.b - self.a;
+        let e2 = self.c - self.a;
+
+        let ray_cross_e2 = ray.direction / e2;
+        let det = e1 * ray_cross_e2;
+
+        if det > -f64::EPSILON && det < f64::EPSILON {
+            return None; // This ray is parallel to this triangle.
+        }
+
+        let inv_det = 1.0 / det;
+        let s = ray.origin - self.a;
+        let u = s * ray_cross_e2 * inv_det;
+        if !(0.0..=1.0).contains(&u) {
+            return None;
+        }
+
+        let s_cross_e1 = s / e1;
+        let v = ray.direction * s_cross_e1 * inv_det;
+        if v < 0.0 || u + v > 1.0 {
+            return None;
+        }
+        let t = e2 * s_cross_e1 * inv_det;
+
+        if t_range.contains(&t) {
+            Some((
+                Hit::new(ray, ray.at(t), self.normal, t),
+                self.material.clone(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn aabb(&self) -> Aabb {
+        let mut xmin = self.a.0.min(self.b.0).min(self.c.0);
+        let mut ymin = self.a.1.min(self.b.1).min(self.c.1);
+        let mut zmin = self.a.2.min(self.b.2).min(self.c.2);
+        let mut xmax = self.a.0.max(self.b.0).max(self.c.0);
+        let mut ymax = self.a.1.max(self.b.1).max(self.c.1);
+        let mut zmax = self.a.2.max(self.b.2).max(self.c.2);
+        if xmax - xmin < 0.0001 {
+            xmax += 0.0001;
+            xmin -= 0.0001;
+        }
+        if ymax - ymin < 0.0001 {
+            ymax += 0.0001;
+            ymin -= 0.0001;
+        }
+        if zmax - zmin < 0.0001 {
+            zmax += 0.0001;
+            zmin -= 0.0001;
+        }
+        Aabb::new(Vector3(xmin, ymin, zmin), Vector3(xmax, ymax, zmax))
+    }
+}
+
+type TriangleMesh = Bvh<Triangle>;
+
+impl TriangleMesh {
+    pub fn from_stl_file(
+        path: impl AsRef<Path>,
+        material: Arc<MaterialEnum>,
+    ) -> std::io::Result<Self> {
+        let mut file = File::open(path)?;
+        let stl = stl_io::read_stl(&mut file)?;
+        let mut triangles = Vec::with_capacity(stl.faces.len());
+        for triangle in stl.faces {
+            let [a, b, c] = triangle.vertices;
+            let a = stl.vertices[a];
+            let b = stl.vertices[b];
+            let c = stl.vertices[c];
+            triangles.push(Triangle {
+                a: a.into(),
+                b: b.into(),
+                c: c.into(),
+                normal: Vector3::from(triangle.normal).normalize(),
+                material: material.clone(),
+            });
+        }
+        Self::new(&mut triangles).ok_or(std::io::ErrorKind::InvalidData.into())
+    }
+}
+
 macro_rules! hittables_enum {
-    ($($ty:ident),+) => {
+    ($outerty:ident: $($ty:ident),+) => {
         #[derive(Clone, Debug, PartialEq, PartialOrd)]
-        enum HittableEnum {
+        enum $outerty {
             $($ty($ty)),+
         }
 
-        impl Hittable for HittableEnum {
+        impl Hittable for $outerty {
             fn hit(&self, ray: Ray, t_range: RangeExclusive) -> Option<(Hit, Arc<MaterialEnum>)> {
                 match &self {
                     $(Self::$ty(val) => val.hit(ray, t_range)),+
@@ -337,18 +430,111 @@ macro_rules! hittables_enum {
         }
 
 
-        $(impl From<$ty> for HittableEnum {
-            fn from(value: $ty) -> HittableEnum {
-                HittableEnum::$ty(value)
+        $(impl From<$ty> for $outerty {
+            fn from(value: $ty) -> $outerty {
+                $outerty::$ty(value)
             }
         })+
     };
 }
 
-hittables_enum!(Sphere);
+hittables_enum!(HittableEnum: Sphere, TriangleMesh);
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
-enum Bvh<T: Hittable> {
+struct Instance {
+    pub inner: HittableEnum,
+    pub translation: Vector3,
+    pub scale: Vector3,
+    pub rotation: Quaternion,
+}
+
+impl Instance {
+    fn transform_pos(&self, value: Vector3) -> Vector3 {
+        self.rotation.rotate(value.attune(Vector3(
+            1.0 / self.scale.0,
+            1.0 / self.scale.1,
+            1.0 / self.scale.2,
+        ))) + self.translation
+    }
+    fn transform_dir(&self, value: Vector3) -> Vector3 {
+        self.rotation.rotate(value.attune(Vector3(
+            1.0 / self.scale.0,
+            1.0 / self.scale.1,
+            1.0 / self.scale.2,
+        )))
+    }
+    fn transform_ray(&self, value: Ray) -> Ray {
+        Ray {
+            origin: self.transform_pos(value.origin),
+            direction: self.transform_dir(value.direction),
+        }
+    }
+    fn untransform_pos(&self, value: Vector3) -> Vector3 {
+        self.rotation
+            .conj()
+            .rotate(value - self.translation)
+            .attune(self.scale)
+    }
+    fn untransform_dir(&self, value: Vector3) -> Vector3 {
+        self.rotation.conj().rotate(value).attune(self.scale)
+    }
+    fn untransform_ray(&self, value: Ray) -> Ray {
+        Ray {
+            origin: self.untransform_pos(value.origin),
+            direction: self.untransform_dir(value.direction),
+        }
+    }
+}
+
+impl Hittable for Instance {
+    fn hit(&self, ray: Ray, t_range: RangeExclusive) -> Option<(Hit, Arc<MaterialEnum>)> {
+        let new_ray = self.transform_ray(ray);
+        let new_dir_len = new_ray.direction.len();
+        let new_t_range = RangeExclusive(t_range.0 * new_dir_len, t_range.1 * new_dir_len);
+        let new_ray = Ray {
+            origin: new_ray.origin,
+            direction: new_ray.direction.normalize(),
+        };
+        let (hit, mat) = self.inner.hit(new_ray, new_t_range)?;
+        let hit = Hit {
+            point: self.untransform_pos(hit.point),
+            normal: self.untransform_dir(hit.normal).normalize(),
+            t: hit.t / new_dir_len,
+            front_face: hit.front_face,
+        };
+        Some((hit, mat))
+    }
+
+    fn aabb(&self) -> Aabb {
+        let mut xmin = f64::INFINITY;
+        let mut ymin = f64::INFINITY;
+        let mut zmin = f64::INFINITY;
+        let mut xmax = f64::NEG_INFINITY;
+        let mut ymax = f64::NEG_INFINITY;
+        let mut zmax = f64::NEG_INFINITY;
+
+        let aabb = self.inner.aabb();
+        for x in [aabb.0.0, aabb.0.1] {
+            for y in [aabb.1.0, aabb.1.1] {
+                for z in [aabb.2.0, aabb.2.1] {
+                    let transformed = self.untransform_pos(Vector3(x, y, z));
+                    xmin = xmin.min(transformed.0);
+                    ymin = ymin.min(transformed.1);
+                    zmin = zmin.min(transformed.2);
+                    xmax = xmax.max(transformed.0);
+                    ymax = ymax.max(transformed.1);
+                    zmax = zmax.max(transformed.2);
+                }
+            }
+        }
+        Aabb::new(Vector3(xmin, ymin, zmin), Vector3(xmax, ymax, zmax))
+    }
+}
+
+hittables_enum!(MaybeInstance: Sphere, TriangleMesh, Instance);
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+enum Bvh<T: Hittable + Clone> {
     Leaf(T),
     Tree {
         children: Box<(Bvh<T>, Bvh<T>)>,
@@ -356,25 +542,17 @@ enum Bvh<T: Hittable> {
     },
 }
 
-impl<T: Hittable> Hittable for Bvh<T> {
+impl<T: Hittable + Clone> Hittable for Bvh<T> {
     fn hit(&self, ray: Ray, t_range: RangeExclusive) -> Option<(Hit, Arc<MaterialEnum>)> {
-        match self {
-            Self::Leaf(entry) => entry.hit(ray, t_range),
-            Self::Tree { children, aabb } => {
-                if aabb.hit_simple(ray, t_range) {
-                    let left = children.0.hit(ray, t_range);
-                    let t_max = if let Some((hit, _)) = &left {
-                        hit.t
-                    } else {
-                        t_range.1
-                    };
-                    let right = children.1.hit(ray, RangeExclusive(t_range.0, t_max));
-                    right.or(left)
-                } else {
-                    None
-                }
-            }
-        }
+        self.hit_cached(
+            ray,
+            t_range,
+            Vector3(
+                1.0 / ray.direction.0,
+                1.0 / ray.direction.1,
+                1.0 / ray.direction.2,
+            ),
+        )
     }
 
     fn aabb(&self) -> Aabb {
@@ -394,15 +572,24 @@ impl<T: Hittable + Clone> Bvh<T> {
         let xsize = aabb.0.1 - aabb.0.0;
         let ysize = aabb.1.1 - aabb.1.0;
         let zsize = aabb.2.1 - aabb.2.0;
-        if xsize >= ysize && xsize >= zsize {
-            world.sort_by(|a, b| a.aabb().0.0.total_cmp(&b.aabb().0.0));
+        let midpoint = if xsize >= ysize && xsize >= zsize {
+            world.sort_by(|a, b| {
+                (a.aabb().0.0 + a.aabb().0.1).total_cmp(&(b.aabb().0.0 + b.aabb().0.1))
+            });
+            world.partition_point(|e| (e.aabb().0.0 + e.aabb().0.1) < (aabb.0.0 + aabb.0.1))
         } else if ysize >= xsize && ysize >= zsize {
-            world.sort_by(|a, b| a.aabb().1.0.total_cmp(&b.aabb().1.0));
+            world.sort_by(|a, b| {
+                (a.aabb().1.0 + a.aabb().1.1).total_cmp(&(b.aabb().1.0 + b.aabb().1.1))
+            });
+            world.partition_point(|e| (e.aabb().1.0 + e.aabb().1.1) < (aabb.1.0 + aabb.1.1))
         } else {
-            world.sort_by(|a, b| a.aabb().2.0.total_cmp(&b.aabb().2.0));
-        }
+            world.sort_by(|a, b| {
+                (a.aabb().2.0 + a.aabb().2.1).total_cmp(&(b.aabb().2.0 + b.aabb().2.1))
+            });
+            world.partition_point(|e| (e.aabb().2.0 + e.aabb().2.1) < (aabb.2.0 + aabb.2.1))
+        };
 
-        let (left, right) = world.split_at_mut(world.len() / 2);
+        let (left, right) = world.split_at_mut(midpoint.clamp(1, world.len() - 1));
         let left = Self::new(left)?;
         let right = Self::new(right)?;
 
@@ -410,6 +597,34 @@ impl<T: Hittable + Clone> Bvh<T> {
             children: Box::new((left, right)),
             aabb,
         })
+    }
+
+    fn hit_cached(
+        &self,
+        ray: Ray,
+        t_range: RangeExclusive,
+        dir_inv: Vector3,
+    ) -> Option<(Hit, Arc<MaterialEnum>)> {
+        match self {
+            Self::Leaf(entry) => entry.hit(ray, t_range),
+            Self::Tree { children, aabb } => {
+                if aabb.hit_cached(ray, t_range, dir_inv) {
+                    let left = children.0.hit_cached(ray, t_range, dir_inv);
+                    let t_max = if let Some((hit, _)) = &left {
+                        hit.t
+                    } else {
+                        t_range.1
+                    };
+                    let right =
+                        children
+                            .1
+                            .hit_cached(ray, RangeExclusive(t_range.0, t_max), dir_inv);
+                    right.or(left)
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -535,7 +750,7 @@ impl Camera {
 }
 
 fn main() {
-    let mut world: HitList<HittableEnum> = HitList(vec![]);
+    let mut world: HitList<MaybeInstance> = HitList(vec![]);
 
     world.add(Sphere {
         center: Vector3(0.0, -1000.0, -0.0),
@@ -592,51 +807,70 @@ fn main() {
         }
     }
 
-    world.add(Sphere {
-        center: Vector3(0.0, 1.0, 0.0),
-        radius: 1.0,
-        material: Arc::new(
-            Dielectric {
-                refraction_index: 1.5,
-            }
-            .into(),
-        ),
-    });
+    // world.add(Sphere {
+    //     center: Vector3(0.0, 1.0, 0.0),
+    //     radius: 1.0,
+    //     material: Arc::new(
+    //         Dielectric {
+    //             refraction_index: 1.5,
+    //         }
+    //         .into(),
+    //     ),
+    // });
 
-    world.add(Sphere {
-        center: Vector3(-4.0, 1.0, 0.0),
-        radius: 1.0,
-        material: Arc::new(
-            Emissive {
-                emission: Vector3(4.0, 8.0, 8.0),
-            }
-            .into(),
-        ),
-    });
+    // world.add(Sphere {
+    //     center: Vector3(-4.0, 1.0, 0.0),
+    //     radius: 1.0,
+    //     material: Arc::new(
+    //         Emissive {
+    //             emission: Vector3(4.0, 8.0, 8.0),
+    //         }
+    //         .into(),
+    //     ),
+    // });
 
-    world.add(Sphere {
-        center: Vector3(4.0, 1.0, 0.0),
-        radius: 1.0,
-        material: Arc::new(
-            Metalic {
-                albedo: Vector3(0.7, 0.6, 0.5),
-                fuzz: 0.0,
-            }
-            .into(),
-        ),
-    });
+    // world.add(Sphere {
+    //     center: Vector3(4.0, 1.0, 0.0),
+    //     radius: 1.0,
+    //     material: Arc::new(
+    //         Metalic {
+    //             albedo: Vector3(0.7, 0.6, 0.5),
+    //             fuzz: 0.0,
+    //         }
+    //         .into(),
+    //     ),
+    // });
+
+    let instance = Instance {
+        inner: TriangleMesh::from_stl_file(
+            "teapot.stl",
+            Arc::new(
+                Lambertian {
+                    albedo: Vector3(0.8, 0.0, 0.8),
+                }
+                .into(),
+            ),
+        )
+        .unwrap()
+        .into(),
+        translation: Vector3(0.0, 0.0, 0.0),
+        rotation: Quaternion::from_euler(-PI / 2.0, PI / 2.0, 0.0),
+        scale: Vector3(0.2, 0.2, 0.2),
+    };
+
+    world.add(instance);
 
     let world = Bvh::new(&mut world.0).unwrap();
 
     let camera = Camera {
         aspect_ratio: 16. / 9.,
-        image_width: 3840,
+        image_width: 1920,
         fov: 20.0 * PI / 180.0,
         defocus_angle: 0.6 * PI / 180.0,
         lookfrom: Vector3(13.0, 2.0, 3.0),
         lookat: Vector3(0.0, 0.0, 0.0),
         vup: Vector3(0.0, 1.0, 0.0),
-        samples_per_pixel: 1000,
+        samples_per_pixel: 500,
         max_bounce: 50,
     };
 

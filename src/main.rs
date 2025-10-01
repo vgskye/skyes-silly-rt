@@ -3,6 +3,7 @@ mod rng_utils;
 mod vec3;
 
 use std::{
+    env::args,
     f64::{self, consts::PI},
     fs::File,
     ops::{Add, Mul, RangeBounds},
@@ -663,7 +664,11 @@ struct Camera {
 }
 
 impl Camera {
-    pub fn render(&self, world: &(impl Hittable + Sync)) -> RgbImage {
+    pub fn render(
+        &self,
+        world: &(impl Hittable + Sync),
+        skybox: &(impl Skybox + Sync),
+    ) -> RgbImage {
         let image_height = ((self.image_width as f64 / self.aspect_ratio) as u32).max(1);
 
         let focal_length = (self.lookfrom - self.lookat).len();
@@ -710,7 +715,7 @@ impl Camera {
                     origin,
                     direction: direction.normalize(),
                 };
-                color += Self::color(ray, world, &mut rng, self.max_bounce);
+                color += Self::color(ray, world, &mut rng, self.max_bounce, skybox);
             }
             (color / self.samples_per_pixel as f64).into()
         })
@@ -721,6 +726,7 @@ impl Camera {
         world: &impl Hittable,
         rng: &mut impl Rng,
         max_bounce: usize,
+        skybox: &impl Skybox,
     ) -> Vector3 {
         let mut remaining_bounces = max_bounce;
         let mut attenuation = Vector3(1.0, 1.0, 1.0);
@@ -738,142 +744,64 @@ impl Camera {
                     scatter.attenuation.attune(attenuation)
                 }
             } else {
-                lerp(
-                    Vector3(1.0, 1.0, 1.0),
-                    Vector3(0.5, 0.7, 1.0),
-                    (ray.direction.1 + 1.0) * 0.5,
-                )
-                .attune(attenuation)
+                skybox.environ(ray).attune(attenuation)
             };
         }
     }
 }
 
-fn main() {
-    let mut world: HitList<MaybeInstance> = HitList(vec![]);
+trait Skybox {
+    fn environ(&self, ray: Ray) -> Vector3;
+}
 
-    world.add(Sphere {
-        center: Vector3(0.0, -1000.0, -0.0),
-        radius: 1000.0,
-        material: Arc::new(
-            Lambertian {
-                albedo: Vector3(0.5, 0.5, 0.5),
-            }
-            .into(),
-        ),
-    });
+struct BlackSkybox;
 
-    let mut rng = rng();
-    for a in -11..11 {
-        for b in -11..11 {
-            let center = Vector3(
-                a as f64 + (rng.random::<f64>() * 0.9),
-                0.2,
-                b as f64 + (rng.random::<f64>() * 0.9),
-            );
-            if (center - Vector3(4.0, 0.2, 0.0)).len() > 0.9 {
-                let choose_mat = rng.random::<f64>();
-                let mat: MaterialEnum = if choose_mat < 0.8 {
-                    Lambertian {
-                        albedo: Vector3(
-                            rng.random::<f64>(),
-                            rng.random::<f64>(),
-                            rng.random::<f64>(),
-                        ),
-                    }
-                    .into()
-                } else if choose_mat < 0.95 {
-                    Metalic {
-                        albedo: Vector3(
-                            (rng.random::<f64>() * 0.5) + 0.5,
-                            (rng.random::<f64>() * 0.5) + 0.5,
-                            (rng.random::<f64>() * 0.5) + 0.5,
-                        ),
-                        fuzz: rng.random::<f64>() * 0.5,
-                    }
-                    .into()
-                } else {
-                    Dielectric {
-                        refraction_index: 1.5,
-                    }
-                    .into()
-                };
-                world.add(Sphere {
-                    center,
-                    radius: 0.2,
-                    material: Arc::new(mat),
-                });
-            }
-        }
+impl Skybox for BlackSkybox {
+    fn environ(&self, ray: Ray) -> Vector3 {
+        Vector3(0.0, 0.0, 0.0)
     }
+}
 
-    // world.add(Sphere {
-    //     center: Vector3(0.0, 1.0, 0.0),
-    //     radius: 1.0,
-    //     material: Arc::new(
-    //         Dielectric {
-    //             refraction_index: 1.5,
-    //         }
-    //         .into(),
-    //     ),
-    // });
+struct SkyishSkybox;
 
-    // world.add(Sphere {
-    //     center: Vector3(-4.0, 1.0, 0.0),
-    //     radius: 1.0,
-    //     material: Arc::new(
-    //         Emissive {
-    //             emission: Vector3(4.0, 8.0, 8.0),
-    //         }
-    //         .into(),
-    //     ),
-    // });
-
-    // world.add(Sphere {
-    //     center: Vector3(4.0, 1.0, 0.0),
-    //     radius: 1.0,
-    //     material: Arc::new(
-    //         Metalic {
-    //             albedo: Vector3(0.7, 0.6, 0.5),
-    //             fuzz: 0.0,
-    //         }
-    //         .into(),
-    //     ),
-    // });
-
-    let instance = Instance {
-        inner: TriangleMesh::from_stl_file(
-            "teapot.stl",
-            Arc::new(
-                Lambertian {
-                    albedo: Vector3(0.8, 0.0, 0.8),
-                }
-                .into(),
-            ),
+impl Skybox for SkyishSkybox {
+    fn environ(&self, ray: Ray) -> Vector3 {
+        lerp(
+            Vector3(1.0, 1.0, 1.0),
+            Vector3(0.5, 0.7, 1.0),
+            (ray.direction.1 + 1.0) * 0.5,
         )
-        .unwrap()
-        .into(),
-        translation: Vector3(0.0, 0.0, 0.0),
-        rotation: Quaternion::from_euler(0.0, -PI / 2.0, PI / 2.0),
-        scale: Vector3(0.2, 0.2, 0.2),
-    };
+    }
+}
 
-    world.add(instance);
+trait Scene {
+    fn world(&self) -> impl Hittable + Sync;
+    fn camera(&self) -> Camera;
+    fn skybox(&self) -> impl Skybox + Sync;
 
-    let world = Bvh::new(&mut world.0).unwrap();
+    fn render(&self) -> RgbImage {
+        self.camera().render(&self.world(), &self.skybox())
+    }
+}
 
-    let camera = Camera {
-        aspect_ratio: 16. / 9.,
-        image_width: 1920,
-        fov: 20.0 * PI / 180.0,
-        defocus_angle: 0.6 * PI / 180.0,
-        lookfrom: Vector3(13.0, 2.0, 3.0),
-        lookat: Vector3(0.0, 0.0, 0.0),
-        vup: Vector3(0.0, 1.0, 0.0),
-        samples_per_pixel: 500,
-        max_bounce: 50,
-    };
+mod scenes;
 
-    let image = camera.render(&world);
-    image.save("output.png").unwrap();
+fn main() {
+    let scene = args()
+        .nth(1)
+        .expect("Usage: skyes-silly-rt [scene] [output]");
+    let output = args()
+        .nth(2)
+        .expect("Usage: skyes-silly-rt [scene] [output]");
+    match scene.as_str() {
+        "CornellBox" => scenes::cornell_box::CornellBox
+            .render()
+            .save(&output)
+            .unwrap(),
+        "TeapotLand" => scenes::teapot_land::TeapotLand
+            .render()
+            .save(&output)
+            .unwrap(),
+        _ => panic!("Unknown scene!"),
+    }
 }

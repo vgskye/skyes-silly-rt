@@ -8,23 +8,6 @@ impl Scene for CornellBox {
 
         world.add(Instance {
             inner: TriangleMesh::from_stl_file(
-                "teapot.stl",
-                Arc::new(
-                    Lambertian {
-                        albedo: Vector3(0.8, 0.0, 0.8),
-                    }
-                    .into(),
-                ),
-            )
-            .unwrap()
-            .into(),
-            translation: Vector3(0.0, 0.0, 0.0),
-            rotation: Quaternion::from_euler(0.0, -PI / 2.0, PI / 2.0),
-            scale: Vector3(0.2, 0.2, 0.2),
-        });
-
-        world.add(Instance {
-            inner: TriangleMesh::from_stl_file(
                 "cube.stl",
                 Arc::new(
                     Emissive {

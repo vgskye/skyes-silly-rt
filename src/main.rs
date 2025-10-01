@@ -450,18 +450,10 @@ struct Instance {
 
 impl Instance {
     fn transform_pos(&self, value: Vector3) -> Vector3 {
-        self.rotation.rotate(value.attune(Vector3(
-            1.0 / self.scale.0,
-            1.0 / self.scale.1,
-            1.0 / self.scale.2,
-        ))) + self.translation
+        self.rotation.rotate(value.attune(self.scale)) + self.translation
     }
     fn transform_dir(&self, value: Vector3) -> Vector3 {
-        self.rotation.rotate(value.attune(Vector3(
-            1.0 / self.scale.0,
-            1.0 / self.scale.1,
-            1.0 / self.scale.2,
-        )))
+        self.rotation.rotate(value.attune(self.scale))
     }
     fn transform_ray(&self, value: Ray) -> Ray {
         Ray {
@@ -473,10 +465,18 @@ impl Instance {
         self.rotation
             .conj()
             .rotate(value - self.translation)
-            .attune(self.scale)
+            .attune(Vector3(
+                1.0 / self.scale.0,
+                1.0 / self.scale.1,
+                1.0 / self.scale.2,
+            ))
     }
     fn untransform_dir(&self, value: Vector3) -> Vector3 {
-        self.rotation.conj().rotate(value).attune(self.scale)
+        self.rotation.conj().rotate(value).attune(Vector3(
+            1.0 / self.scale.0,
+            1.0 / self.scale.1,
+            1.0 / self.scale.2,
+        ))
     }
     fn untransform_ray(&self, value: Ray) -> Ray {
         Ray {
@@ -488,7 +488,7 @@ impl Instance {
 
 impl Hittable for Instance {
     fn hit(&self, ray: Ray, t_range: RangeExclusive) -> Option<(Hit, Arc<MaterialEnum>)> {
-        let new_ray = self.transform_ray(ray);
+        let new_ray = self.untransform_ray(ray);
         let new_dir_len = new_ray.direction.len();
         let new_t_range = RangeExclusive(t_range.0 * new_dir_len, t_range.1 * new_dir_len);
         let new_ray = Ray {
@@ -497,8 +497,8 @@ impl Hittable for Instance {
         };
         let (hit, mat) = self.inner.hit(new_ray, new_t_range)?;
         let hit = Hit {
-            point: self.untransform_pos(hit.point),
-            normal: self.untransform_dir(hit.normal).normalize(),
+            point: self.transform_pos(hit.point),
+            normal: self.transform_dir(hit.normal).normalize(),
             t: hit.t / new_dir_len,
             front_face: hit.front_face,
         };
@@ -517,7 +517,7 @@ impl Hittable for Instance {
         for x in [aabb.0.0, aabb.0.1] {
             for y in [aabb.1.0, aabb.1.1] {
                 for z in [aabb.2.0, aabb.2.1] {
-                    let transformed = self.untransform_pos(Vector3(x, y, z));
+                    let transformed = self.transform_pos(Vector3(x, y, z));
                     xmin = xmin.min(transformed.0);
                     ymin = ymin.min(transformed.1);
                     zmin = zmin.min(transformed.2);
@@ -854,7 +854,7 @@ fn main() {
         .unwrap()
         .into(),
         translation: Vector3(0.0, 0.0, 0.0),
-        rotation: Quaternion::from_euler(-PI / 2.0, PI / 2.0, 0.0),
+        rotation: Quaternion::from_euler(0.0, -PI / 2.0, PI / 2.0),
         scale: Vector3(0.2, 0.2, 0.2),
     };
 

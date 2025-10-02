@@ -1,0 +1,71 @@
+sphere {
+    center 278.0 278.0 278.0
+    radius 100.0
+    material "lambertian" {
+        albedo 0.5 0.5 0.5
+    }
+}
+
+mesh {
+    stl "cube.stl"
+    translation 213.0 554.0 227.0
+    scale 130.0 1.0 105.0
+    material "emissive" {
+        albedo 15.0 15.0 15.0
+    }
+}
+
+mesh {
+    stl "cube.stl"
+    translation 0.0 -1.0 0.0
+    scale 555.0 1.0 555.0
+    material "lambertian" {
+        albedo 0.73 0.73 0.73
+    }
+}
+
+mesh {
+    stl "cube.stl"
+    translation 0.0 555.0 0.0
+    scale 555.0 1.0 555.0
+    material "lambertian" {
+        albedo 0.73 0.73 0.73
+    }
+}
+
+mesh {
+    stl "cube.stl"
+    translation 0.0 0.0 555.0
+    scale 555.0 555.0 1.0
+    material "lambertian" {
+        albedo 0.73 0.73 0.73
+    }
+}
+
+mesh {
+    stl "cube.stl"
+    translation -1.0 0.0 0.0
+    scale 1.0 555.0 555.0
+    material "lambertian" {
+        albedo 0.65 0.05 0.05
+    }
+}
+
+mesh {
+    stl "cube.stl"
+    translation 555.0 0.0 0.0
+    scale 1.0 555.0 555.0
+    material "lambertian" {
+        albedo 0.12 0.45 0.15
+    }
+}
+
+camera {
+    aspect-ratio 1.0 1.0
+    fov 40.0
+    lookfrom 278.0 278.0 -800.0
+    lookat 278.0 278.0 0.0
+
+    image-width 320
+    samples-per-pixel 1000
+}

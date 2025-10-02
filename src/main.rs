@@ -651,6 +651,7 @@ impl<T: Hittable> HitList<T> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 struct Camera {
     pub aspect_ratio: f64,
     pub fov: f64,
@@ -794,14 +795,18 @@ fn main() {
         .nth(2)
         .expect("Usage: skyes-silly-rt [scene] [output]");
     match scene.as_str() {
-        "CornellBox" => scenes::cornell_box::CornellBox
+        "builtin:CornellBox" => scenes::cornell_box::CornellBox
             .render()
             .save(&output)
             .unwrap(),
-        "TeapotLand" => scenes::teapot_land::TeapotLand
+        "builtin:TeapotLand" => scenes::teapot_land::TeapotLand
             .render()
             .save(&output)
             .unwrap(),
-        _ => panic!("Unknown scene!"),
+        path => scenes::custom::ParsedScene::from_path(path)
+            .unwrap()
+            .render()
+            .save(&output)
+            .unwrap(),
     }
 }
